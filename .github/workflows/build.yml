@@ -1,0 +1,71 @@
+# Builds the firmware on every push. Pushing a tag like v1.3.0 also creates a GitHub Release
+# with ready-to-install files (the tag must match FW_VERSION in src/app.h):
+#   countdown-clock-<board>-v<version>-full.bin  first install over USB (flash at address 0x0)
+#   countdown-clock-<board>-v<version>.bin       wireless update from the clock's settings page
+name: Build firmware
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [cyd, cyd2usb]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install platformio esptool
+      - name: Read version
+        id: ver
+        run: |
+          V=$(sed -n 's/^#define FW_VERSION "\(.*\)"/\1/p' src/app.h)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$V" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match FW_VERSION \"$V\" in src/app.h"
+            exit 1
+          fi
+      - name: Build
+        run: pio run -e ${{ matrix.env }}
+      - name: Package
+        run: |
+          B=.pio/build/${{ matrix.env }}
+          BOOT_APP0=$(find ~/.platformio/packages -name boot_app0.bin | head -1)
+          N=countdown-clock-${{ matrix.env }}-v${{ steps.ver.outputs.version }}
+          python -m esptool --chip esp32 merge_bin -o $N-full.bin \
+            --flash_mode dio --flash_size 4MB \
+            0x1000 $B/bootloader.bin 0x8000 $B/partitions.bin 0xe000 "$BOOT_APP0" 0x10000 $B/firmware.bin
+          cp $B/firmware.bin $N.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}
+          path: countdown-clock-*.bin
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Countdown Clock ${{ github.ref_name }}
+          files: dist/*.bin
+          generate_release_notes: true
