@@ -3,6 +3,7 @@
 A countdown clock for vacations, birthdays, concerts, or anything else worth counting down to, built on the ESP32-2432S028R ("Cheap Yellow Display", 2.8" 320×240 touch screen). It shows days, hours, minutes and seconds over your own photo, with live weather and local time at the event's location.
 
 Created by **jhollin1138**.
+![Countdown Clock](docs/images/Event_Screen.png)
 
 ## Features
 
@@ -17,6 +18,18 @@ Created by **jhollin1138**.
 - **Touch interface**: menu, event editor with on-screen keyboard and date picker, WiFi setup, settings
 - **Settings web page** at `http://countdown.local`
 - **Wireless firmware updates**, **settings backup/restore**, and **screenshots** of the clock's screen, all from the web page
+
+## Screens
+
+| Countdown | Location weather | Desk clock | Settings |
+|:---:|:---:|:---:|:---:|
+| ![Countdown](docs/images/Event_Screen.png) | ![Location weather](docs/images/Event_Location_Current_Weather.png) | ![Desk clock](docs/images/Desk_Clock_Screen.png) | ![Settings](docs/images/Main_Settings_Screen.png) |
+
+**Setup on the clock: no computer needed**
+
+| Add an event | WiFi setup | Touch calibration | Calibration test |
+|:---:|:---:|:---:|:---:|
+| ![Add an event](docs/images/Event_Add_Screen.png) | ![WiFi setup](docs/images/Wifi_Screen.png) | ![Touch calibration](docs/images/Calibration_Screen.png) | ![Calibration test](docs/images/Calibration_Test.png) |
 
 ## Hardware
 
