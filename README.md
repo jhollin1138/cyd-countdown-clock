@@ -68,7 +68,7 @@ Build in VS Code with **✓ Build**. Besides the usual `.pio/build/cyd/firmware.
 ## Sounds
 
 - **Built-in**: Chime, Fanfare, Island bells.
-- **RTTTL ringtones**: paste a line like `Tune:d=4,o=5,b=120:c,e,g,2c6` on the settings page. Many are posted online.
+- **RTTTL ringtones**: paste a line like `Tune:d=4,o=5,b=120:c,e,g,2c6` into **Add ringtone** on the settings page. [RTTTL Hub](https://rtttl-hub.io/collections/esphome) has a large collection ready to copy.
 - **MP3 / WAV**: upload short clips (under 30 s works best; playback stops after 90 s). The speaker output is 8-bit, so mono 22 kHz MP3s at 64 kbps sound the same as larger files and save space.
 - Volume is on the settings page and in the on-screen menu. If even low settings are too loud for your speaker, a 10–22 Ω resistor in series with it helps.
 
