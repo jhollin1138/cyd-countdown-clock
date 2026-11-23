@@ -278,7 +278,7 @@ static void menuDraw() {
   uiButton(220, 80, 44, 34, "+");
   uiButton(268, 80, 48, 34, "Mute", cfg.sound ? C_BTN : C_RED);
 
-  static const char* L[6] = {"Events", "Weather", "Home clock", "WiFi", "Settings", "Info"};
+  static const char* L[6] = {"Events", "Weather", "Desk clock", "WiFi", "Settings", "Info"};
   for (int i = 0; i < 6; i++) uiButton(4 + (i % 3) * 106, 124 + (i / 3) * 58, 100, 52, L[i]);
 }
 
@@ -343,11 +343,24 @@ static void infoDraw() {
     "Settings page: http://" HOSTNAME ".local",
     "IP address: " + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("not connected")),
     "WiFi: " + WiFi.SSID() + "  (" + String(WiFi.RSSI()) + " dBm)",
-    "Free memory: " + String(ESP.getFreeHeap() / 1024) + " KB",
-    "Running for " + String(up / 86400) + "d " + String(up / 3600 % 24) + "h " + String(up / 60 % 60) + "m",
+    "Free memory: " + String(ESP.getFreeHeap() / 1024) + " KB (block " + String(ESP.getMaxAllocHeap() / 1024) + " KB)",
+    "Up " + String(up / 86400) + "d " + String(up / 3600 % 24) + "h " + String(up / 60 % 60) + "m, last restart: " + diagLastRestart(),
   };
   for (int i = 0; i < 7; i++)
-    txt(tft, fit(tft, lines[i], 304), 10, 46 + i * 27, i == 1 ? C_DIM : i == 2 ? C_ACCENT : TFT_WHITE, ML_DATUM, 0);
+    txt(tft, fit(tft, lines[i], 304), 10, 44 + i * 23, i == 1 ? C_DIM : i == 2 ? C_ACCENT : TFT_WHITE, ML_DATUM, 0);
+  // Weather status, wrapped onto up to two lines
+  tft.setTextFont(2);
+  String w = "Weather: " + weatherStatus(), l1 = w, l2;
+  if (tft.textWidth(w) > 304) {
+    int cut = w.length();
+    while (cut > 0 && (tft.textWidth(w.substring(0, cut)) > 304 || w[cut] != ' ')) cut--;
+    if (cut <= 0) cut = w.length() / 2;
+    l1 = w.substring(0, cut);
+    l2 = w.substring(cut + 1);
+  }
+  uint16_t col = w.indexOf("failed") >= 0 ? TFT_ORANGE : C_DIM;
+  txt(tft, l1, 10, 208, col, ML_DATUM, 0);
+  if (l2.length()) txt(tft, fit(tft, l2, 304), 10, 225, col, ML_DATUM, 0);
 }
 
 // ---------- Destination weather detail ----------
@@ -466,7 +479,10 @@ static void wxTouch(const TouchEvt& e) {
 }
 
 // ---------- Home clock & weather ----------
-static int hmMin = -1, hmDay = -1;
+static int hmMin = -1;
+static String hmRow;           // date / next-event line as last drawn
+static bool homeAuto = false;  // opened automatically because there are no upcoming events
+static bool openingAuto = false;
 
 static void homeTime(const struct tm& t) {
   char b[8];
@@ -493,16 +509,48 @@ static void homeTime(const struct tm& t) {
   tft.setTextPadding(0);
 }
 
-static void homeDate(const struct tm& t) {
+// Date line; when an event is coming up, the date moves left and the next event shows on the right
+static void homeDate(const struct tm& t, time_t now) {
+  String ev;
+  int idx = nextEventIdx();
+  if (idx >= 0) {
+    const Event& e = cfg.events[idx];
+    long long s = (long long)e.epoch - now;
+    int d = dayBucket(e.epoch, now);
+    String when;
+    if (s <= 0) when = "now!";
+    else if (d >= 2) when = String(d) + " days";
+    else if (d == 1) when = "1 day";
+    else if (s >= 3600) when = "in " + String((int)(s / 3600)) + " h";
+    else when = "in " + String((int)(s / 60) + 1) + " min";
+    ev = e.name + ": " + when;
+  }
+  String date = idx >= 0 ? String(WDAY[t.tm_wday]) + ", " + MON[t.tm_mon] + " " + String(t.tm_mday)
+                         : String(WEEKDAY[t.tm_wday]) + ", " + MONTH[t.tm_mon] + " " + String(t.tm_mday);
+  String row = date + "|" + ev;
+  if (row == hmRow) return;
+  hmRow = row;
   tft.fillRect(0, 116, 320, 20, C_BG);
   tft.setFreeFont(&FreeSans9pt7b);
-  String d = String(WEEKDAY[t.tm_wday]) + ", " + MONTH[t.tm_mon] + " " + String(t.tm_mday);
-  txt(tft, d, 160, 125, C_DIM, MC_DATUM, 0);
+  if (idx < 0) {
+    txt(tft, date, 160, 125, C_DIM, MC_DATUM, 0);
+    return;
+  }
+  txt(tft, date, 8, 125, C_DIM, ML_DATUM, 0);
+  int dw = tft.textWidth(date);
+  // Keep the countdown part whole and shorten the event name if space is tight
+  String when = ev.substring(ev.lastIndexOf(':'));
+  String name = ev.substring(0, ev.lastIndexOf(':'));
+  int room = 312 - (8 + dw + 14) - tft.textWidth(when);
+  String shown = (room > 20 ? fit(tft, name, room) : String("")) + when;
+  if (room <= 20) shown = shown.substring(2);  // drop ": "
+  txt(tft, shown, 312, 125, C_ACCENT, MR_DATUM, 0);
 }
 
 static void homeDraw() {
   header(cfg.homeName.length() ? cfg.homeName : String("Home"));
-  hmMin = hmDay = -1;
+  hmMin = -1;
+  hmRow = "";
   tft.drawFastHLine(8, 140, 304, C_CARD);
   if (isnan(cfg.homeLat)) {
     tft.setTextFont(2);
@@ -531,14 +579,31 @@ static void homeDraw() {
 
 static void homeTick() {
   if (!timeValid()) return;
-  struct tm t = homeTm(time(nullptr));
-  if (t.tm_min != hmMin) { hmMin = t.tm_min; homeTime(t); }
-  if (t.tm_yday != hmDay) { hmDay = t.tm_yday; homeDate(t); }
+  time_t now = time(nullptr);
+  struct tm t = homeTm(now);
+  if (t.tm_min != hmMin) {
+    hmMin = t.tm_min;
+    homeTime(t);
+    homeDate(t, now);  // redraws only when the text changes
+  }
+}
+
+// Leaving the desk clock: turn the mode off, or with no events, go to the menu (to add one)
+static void homeLeave() {
+  if (homeAuto) {
+    openFrom(UI_MENU, UI_NONE);
+    return;
+  }
+  if (cfg.deskOn) {
+    cfg.deskOn = false;
+    saveConfig();
+  }
+  goBack();
 }
 
 static void homeTouch(const TouchEvt& e) {
-  if (backHit(e)) { goBack(); return; }
-  if (e.type == T_SWIPE_L || e.type == T_SWIPE_R) { goBack(); return; }
+  if (backHit(e)) { homeLeave(); return; }
+  if (e.type == T_SWIPE_L || e.type == T_SWIPE_R) { homeLeave(); return; }
   if (e.type != T_TAP) return;
   if (isnan(cfg.homeLat) && hit(e, 70, 178, 180, 52)) {
     kbOpen("Home city", cfg.homeName, 40, [](bool ok, const String& t) {
@@ -546,7 +611,7 @@ static void homeTouch(const TouchEvt& e) {
       else go(UI_HOME);
     });
   } else if (e.y > 32 && e.y < 136) {
-    uiClose();  // tap the clock to return to the countdown
+    homeLeave();  // tap the clock to return to the countdown
   }
 }
 
@@ -975,13 +1040,13 @@ static void dateTouch(const TouchEvt& e) {
 }
 
 // ---------- Settings ----------
-enum { ST_UNITS, ST_CLOCK, ST_BRIGHT, ST_QUIET, ST_SOUND, ST_TEST, ST_LED, ST_MODE, ST_HOME, ST_WIFI,
+enum { ST_UNITS, ST_CLOCK, ST_BRIGHT, ST_QUIET, ST_SOUND, ST_TEST, ST_LED, ST_MODE, ST_DESK, ST_HOME, ST_WIFI,
        ST_CAL, ST_INVERT, ST_FLIP, ST_RESTART, ST_COUNT };
 static int stOff = 0;
 
 static String stLabel(int i) {
   static const char* L[ST_COUNT] = {"Units", "Clock", "Brightness", "Quiet hours", "Sound", "Test sounds", "LED effects",
-                                    "Several events", "Home location", "WiFi", "Calibrate touch",
+                                    "Several events", "Desk if no events", "Home location", "WiFi", "Calibrate touch",
                                     "Invert colors", "Rotate 180", "Restart clock"};
   return L[i];
 }
@@ -995,6 +1060,7 @@ static String stValue(int i) {
     case ST_SOUND: return cfg.sound ? String(cfg.volume) + "%" : String("Muted");
     case ST_LED: return onOff(cfg.led);
     case ST_MODE: return cfg.mode == "rotate" ? "Rotate" : "Show next";
+    case ST_DESK: return onOff(cfg.deskWhenEmpty);
     case ST_HOME: return cfg.homeName.length() ? cfg.homeName : String("Not set");
     case ST_WIFI: return WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("Not connected");
     case ST_INVERT: return onOff(cfg.invert);
@@ -1038,6 +1104,7 @@ static void settingsAct(int i) {
     case ST_TEST: celebrate(0, true); uiClose(); return;
     case ST_LED: cfg.led = !cfg.led; if (!cfg.led) ledEffect(0, 0, false); commitConfig(false); break;
     case ST_MODE: cfg.mode = cfg.mode == "rotate" ? "nearest" : "rotate"; commitConfig(false); break;
+    case ST_DESK: cfg.deskWhenEmpty = !cfg.deskWhenEmpty; commitConfig(false); break;
     case ST_HOME:
       kbOpen("Home city", cfg.homeName, 40, [](bool ok, const String& t) {
         if (ok && t.length()) geoSearch(t, UI_SETTINGS, [](const GeoHit& h) { setHome(h); go(UI_SETTINGS); });
@@ -1151,6 +1218,13 @@ bool runCalibration() {
 // ---------- Dispatcher ----------
 static void openFrom(UiScreen s, UiScreen parent) {
   parentOf[s] = parent;
+  if (s == UI_HOME) {
+    homeAuto = openingAuto;
+    if (!homeAuto && !cfg.deskOn) {  // remember desk clock mode across restarts
+      cfg.deskOn = true;
+      saveConfig();
+    }
+  }
   switch (s) {
     case UI_WIFI: wifiOpen(); break;
     case UI_TRIPS: tripsOpen(); break;
@@ -1160,6 +1234,12 @@ static void openFrom(UiScreen s, UiScreen parent) {
 }
 
 void uiOpen(UiScreen s) { openFrom(s, UI_NONE); }
+
+void uiOpenDeskAuto() {
+  openingAuto = true;
+  openFrom(UI_HOME, UI_NONE);
+  openingAuto = false;
+}
 
 void uiLoop(const TouchEvt& in) {
   TouchEvt e = in;

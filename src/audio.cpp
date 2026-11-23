@@ -415,9 +415,14 @@ static void finish() {
   playing = false;
 }
 
+static TaskHandle_t audioTaskH = nullptr;
+static const uint32_t AUDIO_STACK = 28672;  // minimp3 keeps ~16 KB of scratch space on the stack
+
+// The audio task (and its 28 KB stack) only exists while sounds are playing; it ends itself
+// after a few idle seconds so that memory is free for the weather requests and web server.
 static void audioTask(void*) {
   static int16_t block[256];
-  uint32_t started = 0;
+  uint32_t started = 0, idleSince = millis();
   for (;;) {
     if (reqStop || reqPending) {
       if (src) finish();
@@ -444,7 +449,18 @@ static void audioTask(void*) {
       for (int i = 0; i < n; i++) dac.sample(block[i], hz);  // blocks while the DMA buffer is full
       // Stop at the end, or after 90 s: long songs shouldn't run on forever
       if (n == 0 || millis() - started > 90000) finish();
+      idleSince = millis();
     } else {
+      if (millis() - idleSince > 3000) {
+        xSemaphoreTake(audioMux, portMAX_DELAY);
+        if (!reqPending) {
+          audioTaskH = nullptr;
+          reqStop = false;
+          xSemaphoreGive(audioMux);
+          vTaskDelete(nullptr);
+        }
+        xSemaphoreGive(audioMux);
+      }
       vTaskDelay(pdMS_TO_TICKS(10));
     }
   }
@@ -453,18 +469,24 @@ static void audioTask(void*) {
 void audioBegin() {
   DacOut::idlePin();
   audioMux = xSemaphoreCreateMutex();
-  // minimp3 keeps ~16 KB of scratch space on the stack while decoding a frame
-  xTaskCreatePinnedToCore(audioTask, "audio", 28672, nullptr, 2, nullptr, 0);
 }
 
 void audioPlay(const String& name) {
   xSemaphoreTake(audioMux, portMAX_DELAY);
   reqName = name;
   reqPending = true;
+  if (!audioTaskH &&
+      xTaskCreatePinnedToCore(audioTask, "audio", AUDIO_STACK, nullptr, 2, &audioTaskH, 0) != pdPASS) {
+    audioTaskH = nullptr;
+    reqPending = false;
+    Serial.println("Not enough memory to start audio");
+  }
   xSemaphoreGive(audioMux);
 }
 
-void audioStop() { reqStop = true; }
+void audioStop() {
+  if (audioTaskH) reqStop = true;
+}
 bool audioPlaying() { return playing || reqPending; }
 
 // which: 0 = milestone, 1 = arrival celebration

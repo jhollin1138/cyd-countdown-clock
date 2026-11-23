@@ -512,6 +512,10 @@ void displayMessage(const String& title, const String& l1, const String& l2, con
 
 void displayHold(uint32_t ms) { infoUntil = millis() + ms; }
 
+void displayReadRect(int x, int y, int w, int h, uint16_t* buf) { tft.readRect(x, y, w, h, buf); }
+
+int nextEventIdx() { return timeValid() ? nearest(time(nullptr)) : -1; }
+
 void displayProgress(const String& title, int pct) {
   static int lastPct = -2;
   if (pct < 0 || lastPct < 0 || pct < lastPct) {
@@ -624,6 +628,17 @@ void displayLoop() {
   }
 
   time_t now = time(nullptr);
+  // Desk clock: restore it if it was left on, or show it when there's nothing to count down to
+  if (netState == NET_ONLINE) {
+    if (cfg.deskOn) {
+      uiOpen(UI_HOME);
+      return;
+    }
+    if (cfg.deskWhenEmpty && nearest(now) < 0) {
+      uiOpenDeskAuto();
+      return;
+    }
+  }
   bool newSec = now != lastTick;
   if (newSec) {
     selectActive(now);

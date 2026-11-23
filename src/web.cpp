@@ -47,6 +47,9 @@ static void handleStatus() {
   d["ssid"] = WiFi.SSID();
   d["rssi"] = WiFi.RSSI();
   d["heap"] = ESP.getFreeHeap();
+  d["maxBlock"] = ESP.getMaxAllocHeap();
+  d["wx"] = weatherStatus();
+  d["restart"] = diagLastRestart();
   d["up"] = millis() / 1000;
   d["ldr"] = ldrRaw();
   if (timeValid()) {
@@ -97,7 +100,8 @@ static void handleSave() {
   sortEvents(nc.events);  // keep events in date order
 
   bool dispChanged = nc.invert != cfg.invert || nc.flip != cfg.flip;
-  // Touch calibration is set on the clock itself; never take it from the web page
+  // Touch calibration and desk clock state live on the clock itself; never take them from the web page
+  nc.deskOn = cfg.deskOn;
   nc.calSet = cfg.calSet;
   nc.calSwap = cfg.calSwap;
   nc.calX0 = cfg.calX0;
@@ -366,6 +370,18 @@ static void handleFwDone() {
   }
 }
 
+// Raw screen capture: 320x240 RGB565, high byte first. The settings page turns it into a PNG.
+static void handleShot() {
+  static uint16_t rows[320 * 4];
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(320 * 240 * 2);
+  server.send(200, "application/octet-stream", "");
+  for (int y = 0; y < 240; y += 4) {
+    displayReadRect(0, y, 320, 4, rows);
+    server.sendContent((const char*)rows, sizeof rows);
+  }
+}
+
 static void handleImg() {
   String n = server.arg("name");
   if (!imageExists(n)) { server.send(404, "text/plain", "Not found"); return; }
@@ -390,6 +406,8 @@ void webBegin() {
   server.on("/api/sound/play", HTTP_POST, handleSoundPlay);
   server.on("/api/sound/stop", HTTP_POST, [] { audioStop(); server.send(200, "application/json", "{\"ok\":true}"); });
   server.on("/api/firmware", HTTP_POST, handleFwDone, handleFwChunk);
+  server.on("/api/screenshot", HTTP_GET, handleShot);
+  server.on("/api/restarts", HTTP_GET, [] { server.send(200, "text/plain", diagLog()); });
   server.on("/api/config", HTTP_POST, handleSave);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/images", HTTP_GET, handleImages);

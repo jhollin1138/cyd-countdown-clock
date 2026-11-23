@@ -92,7 +92,94 @@ static bool parseWx(JsonObject o, Wx& out) {
 
 struct Loc { float lat, lon; int slot; };  // slot = event index, or HOME_BIT
 
-// Fetch weather for several places in one HTTPS request (Open-Meteo returns a list).
+// ---------- Network helper and status ----------
+static String lastErr, lastVia;
+static time_t lastOkAt = 0, lastErrAt = 0;
+
+// GET a JSON document from Open-Meteo. Tries plain HTTP first: the data is public, and skipping
+// TLS saves ~40 KB of memory and a slow handshake. Falls back to HTTPS if HTTP fails.
+// Call with netMux held.
+static bool getJson(const char* host, const String& path, JsonDocument& filter, JsonDocument& doc, String& err) {
+  for (int secure = 0; secure < 2; secure++) {
+    WiFiClient plain;
+    WiFiClientSecure tls;
+    if (secure) tls.setInsecure();  // public, read-only data; skips certificate bundle management
+    HTTPClient http;
+    http.useHTTP10(true);  // avoid chunked encoding so the JSON can be streamed
+    http.setTimeout(12000);
+    String url = String(secure ? "https://" : "http://") + host + path;
+    bool begun = secure ? http.begin(tls, url) : http.begin(plain, url);
+    if (!begun) {
+      err = "couldn't start request";
+      continue;
+    }
+    int code = http.GET();
+    if (code != 200) {
+      err = code < 0 ? HTTPClient::errorToString(code) : "HTTP " + String(code);
+      http.end();
+      continue;
+    }
+    // Read the whole body first, pausing whenever no data is waiting. Parsing straight from the
+    // network stream busy-waits (Stream::timedRead never yields), which starves the idle task on
+    // this core and trips the 5-second task watchdog when the server is slow.
+    std::vector<char> body;
+    int len = http.getSize();  // -1 when the server doesn't say
+    body.reserve(len > 0 ? len : 8192);
+    WiFiClient* st = http.getStreamPtr();
+    uint32_t last = millis();
+    bool tooBig = false;
+    char buf[512];
+    while (millis() - last < 12000) {
+      int avail = st->available();
+      if (avail > 0) {
+        int n = st->read((uint8_t*)buf, min(avail, (int)sizeof buf));
+        if (n > 0) {
+          body.insert(body.end(), buf, buf + n);
+          last = millis();
+          if (body.size() > 60000) { tooBig = true; break; }
+          if (len > 0 && (int)body.size() >= len) break;
+        }
+      } else if (!st->connected()) {
+        break;
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(5));
+      }
+    }
+    http.end();
+    if (tooBig || body.empty()) {
+      err = tooBig ? "response too large" : "no data received";
+      continue;
+    }
+    DeserializationError de = deserializeJson(doc, body.data(), body.size(), DeserializationOption::Filter(filter));
+    if (de) {
+      err = String("bad data: ") + de.c_str();
+      continue;
+    }
+    lastVia = secure ? "HTTPS" : "HTTP";
+    return true;
+  }
+  err += " (free " + String(ESP.getFreeHeap() / 1024) + " KB, largest " + String(ESP.getMaxAllocHeap() / 1024) + " KB)";
+  return false;
+}
+
+String weatherStatus() {
+  xSemaphoreTake(dataMux, portMAX_DELAY);
+  time_t okAt = lastOkAt, errAt = lastErrAt;
+  String err = lastErr, via = lastVia;
+  xSemaphoreGive(dataMux);
+  auto at = [](time_t t) {
+    struct tm tm;
+    localtime_r(&t, &tm);
+    char b[16];
+    strftime(b, sizeof b, cfg.h24 ? "%H:%M" : "%I:%M %p", &tm);
+    return String(b[0] == '0' ? b + 1 : b);
+  };
+  if (!okAt && !errAt) return "not fetched yet";
+  if (errAt > okAt) return "failed at " + at(errAt) + ": " + err;
+  return "OK at " + at(okAt) + " via " + via;
+}
+
+// Fetch weather for several places in one request (Open-Meteo returns a list).
 // ok[i] says whether out[i] was filled.
 static void fetchMany(const std::vector<Loc>& locs, bool metric, std::vector<Wx>& out, std::vector<bool>& ok) {
   size_t n = locs.size();
@@ -107,34 +194,31 @@ static void fetchMany(const std::vector<Loc>& locs, bool metric, std::vector<Wx>
     snprintf(b, sizeof b, "%.4f", locs[i].lon); lons += b;
     tzs += "auto";  // each place gets its own time zone
   }
-  String url = "https://api.open-meteo.com/v1/forecast?latitude=" + lats + "&longitude=" + lons +
+  String path = "/v1/forecast?latitude=" + lats + "&longitude=" + lons +
                "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day"
                "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,uv_index_max,sunrise,sunset"
                "&timezone=" + tzs + "&forecast_days=" + String(WX_DAYS) + "&timeformat=unixtime" +
                (metric ? "" : "&temperature_unit=fahrenheit&wind_speed_unit=mph");
 
+  JsonDocument filter;
+  fillFilter(n > 1 ? filter[0].to<JsonObject>() : filter.to<JsonObject>());  // [0] applies to every list item
+  JsonDocument doc;
+  String err;
   xSemaphoreTake(netMux, portMAX_DELAY);
-  WiFiClientSecure client;
-  client.setInsecure();  // public, read-only data; skips certificate bundle management
-  HTTPClient http;
-  http.useHTTP10(true);  // avoid chunked encoding so the JSON can be streamed
-  http.setTimeout(12000);
-  if (http.begin(client, url)) {
-    if (http.GET() == 200) {
-      JsonDocument filter;
-      fillFilter(n > 1 ? filter[0].to<JsonObject>() : filter.to<JsonObject>());  // [0] applies to every list item
-      JsonDocument doc;
-      if (!deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter))) {
-        if (n == 1) ok[0] = parseWx(doc.as<JsonObject>(), out[0]);
-        else {
-          JsonArray arr = doc.as<JsonArray>();
-          for (size_t i = 0; i < n && i < arr.size(); i++) ok[i] = parseWx(arr[i], out[i]);
-        }
-      }
-    }
-    http.end();
-  }
+  bool got = getJson("api.open-meteo.com", path, filter, doc, err);
   xSemaphoreGive(netMux);
+  if (got) {
+    if (n == 1) ok[0] = parseWx(doc.as<JsonObject>(), out[0]);
+    else {
+      JsonArray arr = doc.as<JsonArray>();
+      for (size_t i = 0; i < n && i < arr.size(); i++) ok[i] = parseWx(arr[i], out[i]);
+    }
+    if (!ok[0]) err = "unexpected response";
+  }
+  xSemaphoreTake(dataMux, portMAX_DELAY);
+  if (got && ok[0]) lastOkAt = time(nullptr);
+  else { lastErr = err; lastErrAt = time(nullptr); }
+  xSemaphoreGive(dataMux);
 }
 
 static void wxTask(void*) {
@@ -226,48 +310,33 @@ static String urlEncode(const String& s) {
 bool geocode(const String& q, std::vector<GeoHit>& out, String& err) {
   out.clear();
   if (WiFi.status() != WL_CONNECTED) { err = "Not connected to WiFi"; return false; }
+  JsonDocument filter;
+  JsonObject f = filter["results"][0].to<JsonObject>();
+  f["name"] = true;
+  f["admin1"] = true;
+  f["country"] = true;
+  f["latitude"] = true;
+  f["longitude"] = true;
+  JsonDocument doc;
+  String e;
   xSemaphoreTake(netMux, portMAX_DELAY);
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.useHTTP10(true);
-  http.setTimeout(10000);
-  String url = "https://geocoding-api.open-meteo.com/v1/search?count=5&language=en&format=json&name=" + urlEncode(q);
-  bool ok = false;
-  if (http.begin(client, url)) {
-    int code = http.GET();
-    if (code == 200) {
-      JsonDocument filter;
-      JsonObject f = filter["results"][0].to<JsonObject>();
-      f["name"] = true;
-      f["admin1"] = true;
-      f["country"] = true;
-      f["latitude"] = true;
-      f["longitude"] = true;
-      JsonDocument doc;
-      if (!deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter))) {
-        for (JsonObject r : doc["results"].as<JsonArray>()) {
-          GeoHit h;
-          String name = r["name"] | "";
-          String a1 = r["admin1"] | "";
-          String ctry = r["country"] | "";
-          h.shortName = a1.length() ? name + ", " + a1 : name;
-          h.label = h.shortName + (ctry.length() ? ", " + ctry : String(""));
-          h.lat = r["latitude"] | 0.0f;
-          h.lon = r["longitude"] | 0.0f;
-          if (name.length()) out.push_back(h);
-        }
-        ok = true;
-      } else {
-        err = "Couldn't read the search results";
-      }
-    } else {
-      err = "Search failed (" + String(code) + ")";
-    }
-    http.end();
-  } else {
-    err = "Search failed";
-  }
+  bool got = getJson("geocoding-api.open-meteo.com",
+                     "/v1/search?count=5&language=en&format=json&name=" + urlEncode(q), filter, doc, e);
   xSemaphoreGive(netMux);
-  return ok;
+  if (!got) {
+    err = "Search failed: " + e;
+    return false;
+  }
+  for (JsonObject r : doc["results"].as<JsonArray>()) {
+    GeoHit h;
+    String name = r["name"] | "";
+    String a1 = r["admin1"] | "";
+    String ctry = r["country"] | "";
+    h.shortName = a1.length() ? name + ", " + a1 : name;
+    h.label = h.shortName + (ctry.length() ? ", " + ctry : String(""));
+    h.lat = r["latitude"] | 0.0f;
+    h.lon = r["longitude"] | 0.0f;
+    if (name.length()) out.push_back(h);
+  }
+  return true;
 }

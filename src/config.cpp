@@ -88,6 +88,8 @@ bool configFromJson(const String& in, Config& c, String& err) {
   if (!c.soundMile.length()) c.soundMile = Config().soundMile;
   if (!c.soundArr.length()) c.soundArr = Config().soundArr;
   c.led = jbool(d["led"], c.led);
+  c.deskOn = jbool(d["deskOn"], false);
+  c.deskWhenEmpty = jbool(d["deskWhenEmpty"], true);
   c.homeName = jstr(d["homeName"], "");
   if (c.homeName.length() > 48) c.homeName = c.homeName.substring(0, 48);
   if (d["homeLat"].is<float>() && d["homeLon"].is<float>()) {
@@ -149,6 +151,8 @@ String configToJson() {
   d["soundMile"] = cfg.soundMile;
   d["soundArr"] = cfg.soundArr;
   d["led"] = cfg.led;
+  d["deskOn"] = cfg.deskOn;
+  d["deskWhenEmpty"] = cfg.deskWhenEmpty;
   d["homeName"] = cfg.homeName;
   if (!isnan(cfg.homeLat)) { d["homeLat"] = cfg.homeLat; d["homeLon"] = cfg.homeLon; }
   d["calSet"] = cfg.calSet;

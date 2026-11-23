@@ -46,6 +46,7 @@ void setup() {
   netMux = xSemaphoreCreateMutex();
 
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
+  diagBegin();
   loadConfig();
   hwBegin();
   displayBegin();
@@ -86,5 +87,6 @@ void loop() {
   }
   hwLoop();
   displayLoop();
+  diagLoop();
   delay(2);
 }

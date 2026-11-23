@@ -44,14 +44,15 @@ progress{width:100%;height:16px;margin-top:8px}
 <section><h2>Clock</h2>
 <div class="row"><div><label>Home time zone</label><select id="tzsel"></select><input id="tz" style="margin-top:6px" placeholder="POSIX TZ string"></div>
 <div><label>Units</label><select id="metric"><option value="0">&deg;F, mph</option><option value="1">&deg;C, km/h</option></select></div></div>
-<label>Home location (weather on the home clock screen)</label>
+<label>Home location (weather on the desk clock)</label>
 <div style="display:flex;gap:6px"><input id="qh" placeholder="City name" onkeydown="if(event.key=='Enter')geoH()"><button class="sec" onclick="geoH()">Search</button></div>
 <select id="gh" style="display:none;margin-top:6px" onchange="pickH(this.value)"></select>
 <div class="mut" id="llh" style="margin-top:4px"></div>
 <div class="chk"><input type="checkbox" id="h24"><span>24-hour clock</span></div>
+<div class="chk"><input type="checkbox" id="deskWhenEmpty"><span>Show the desk clock when there are no upcoming events</span></div>
 <div class="row"><div><label>With several events</label><select id="mode"><option value="nearest">Show the next event</option><option value="rotate">Rotate between events</option></select></div>
 <div><label>Rotate every (seconds)</label><input type="number" id="rotateSec" min="5" max="3600"></div></div>
-<p class="mut">On the clock: swipe or tap to switch events &middot; tap the weather for the 5-day forecast &middot; tap the time (top right) for the home clock &middot; hold 1 second for the menu (brightness, volume, events, WiFi, settings) &middot; hold 8 seconds to recalibrate touch.</p></section>
+<p class="mut">On the clock: swipe or tap to switch events &middot; tap the weather for the 5-day forecast &middot; tap the time (top right) for desk clock mode, which stays on, even after a restart, until you tap back &middot; hold 1 second for the menu (brightness, volume, events, WiFi, settings) &middot; hold 8 seconds to recalibrate touch.</p></section>
 
 <section><h2>Display</h2>
 <div class="chk"><input type="checkbox" id="autoBright"><span>Auto-brightness from the light sensor</span></div>
@@ -97,6 +98,11 @@ progress{width:100%;height:16px;margin-top:8px}
 <input type="file" id="fw" accept=".bin"><progress id="fwp" max="100" value="0" style="display:none"></progress><div id="fws" class="mut"></div>
 <p style="text-align:right;margin:6px 0 0"><button onclick="flash()">Install update</button></p></section>
 
+<section><h2>Screenshot</h2>
+<p class="mut">Go to any screen on the clock, then capture exactly what it shows as a PNG.</p>
+<p><button onclick="shot()">Take screenshot</button> <span id="shs" class="mut"></span></p>
+<div id="shp" style="display:none"><img id="shi" style="width:100%;max-width:640px;border-radius:8px;border:1px solid var(--bd);image-rendering:pixelated"><p><a id="shd"><button class="sec">Download PNG</button></a></p></div></section>
+
 <section><h2>System</h2><div id="sys" class="mut"></div>
 <p><button class="sec" onclick="if(confirm('Reboot the clock?'))post('/api/reboot')">Reboot</button>
 <button class="del" onclick="if(confirm('Forget WiFi and restart in setup mode?'))post('/api/wifireset')">Reset WiFi</button></p></section>
@@ -107,7 +113,7 @@ progress{width:100%;height:16px;margin-top:8px}
 const $=id=>document.getElementById(id);
 let C={events:[]},IM=[],ldrNow=0,GR={};
 const TZ=[["US Eastern","EST5EDT,M3.2.0,M11.1.0"],["US Central","CST6CDT,M3.2.0,M11.1.0"],["US Mountain","MST7MDT,M3.2.0,M11.1.0"],["Arizona","MST7"],["US Pacific","PST8PDT,M3.2.0,M11.1.0"],["Alaska","AKST9AKDT,M3.2.0,M11.1.0"],["Hawaii","HST10"],["UK / Ireland","GMT0BST,M3.5.0/1,M10.5.0"],["Central Europe","CET-1CEST,M3.5.0,M10.5.0/3"],["Custom (type below)",""]];
-const F=['tz','metric','h24','mode','rotateSec','autoBright','manualBright','minBright','maxBright','ldrBright','ldrDark','invert','flip','quietOn','quietStart','quietEnd','quietLevel','sound','volume','soundMile','soundArr','led'];
+const F=['tz','metric','h24','deskWhenEmpty','mode','rotateSec','autoBright','manualBright','minBright','maxBright','ldrBright','ldrDark','invert','flip','quietOn','quietStart','quietEnd','quietLevel','sound','volume','soundMile','soundArr','led'];
 let SB=[],SF=[];
 function toast(m,bad){const t=$('toast');t.textContent=m;t.style.background=bad?'#b91c1c':'#16a34a';t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',2800)}
 async function post(u){try{const r=await fetch(u,{method:'POST'});r.ok?toast('Done'):toast(await r.text(),1)}catch(e){toast('Clock not reachable',1)}}
@@ -159,6 +165,13 @@ function resize(file){return new Promise((ok,bad)=>{const img=new Image();img.on
 $('file').onchange=async e=>{let n=0;for(const f of e.target.files){$('up').textContent='Uploading '+f.name+'…';
   try{const b=await resize(f);const fd=new FormData();fd.append('f',b,safe(f.name));const r=await fetch('/api/upload',{method:'POST',body:fd});if(!r.ok)throw await r.text();n++}catch(x){toast(f.name+': '+x,1)}}
   $('up').textContent='';e.target.value='';await loadImgs();renderEvs();if(n)toast(n+' photo'+(n>1?'s':'')+' uploaded')};
+async function shot(){$('shs').textContent='Capturing…';
+  try{const r=await fetch('/api/screenshot',{cache:'no-store'});if(!r.ok)throw r.status;const b=new Uint8Array(await r.arrayBuffer());
+    if(b.length<320*240*2)throw 'incomplete';const c=document.createElement('canvas');c.width=320;c.height=240;const x=c.getContext('2d'),im=x.createImageData(320,240),d=im.data;
+    for(let i=0;i<320*240;i++){const v=b[2*i]<<8|b[2*i+1],r5=v>>11,g6=v>>5&63,b5=v&31;d[4*i]=r5<<3|r5>>2;d[4*i+1]=g6<<2|g6>>4;d[4*i+2]=b5<<3|b5>>2;d[4*i+3]=255}
+    x.putImageData(im,0,0);const url=c.toDataURL('image/png'),t=new Date(),p=n=>String(n).padStart(2,'0');
+    $('shi').src=url;$('shd').href=url;$('shd').download=`countdown-${t.getFullYear()}${p(t.getMonth()+1)}${p(t.getDate())}-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}.png`;
+    $('shp').style.display='block';$('shs').textContent=''}catch(e){$('shs').textContent='';toast('Screenshot failed',1)}}
 function sndLabel(id){const b=SB.find(x=>x.id==id);return b?b.label:id.replace(/\.[^.]*$/,'')}
 function sndOpts(){const all=SB.map(b=>b.id).concat(SF.map(f=>f.name));
   ['soundMile','soundArr'].forEach(k=>{const cur=C[k];let ids=all.slice();if(cur&&!ids.includes(cur))ids.push(cur);
@@ -194,7 +207,7 @@ async function waitBack(){for(let i=0;i<30;i++){try{const r=await fetch('/api/st
 async function status(){try{const s=await(await fetch('/api/status')).json();ldrNow=s.ldr;$('ldr').textContent=s.ldr;
   $('st').textContent=s.time+(s.active?' · showing: '+s.active:'');
   $('fwv').textContent='v'+s.fw;
-  $('sys').innerHTML=`Firmware ${esc(s.fw)} &middot; IP ${esc(s.ip)} &middot; WiFi ${esc(s.ssid)} (${s.rssi} dBm) &middot; Free memory ${Math.floor(s.heap/1024)} KB &middot; Up ${Math.floor(s.up/3600)}h ${Math.floor(s.up%3600/60)}m`}catch(e){$('st').textContent='Clock not reachable'}}
+  $('sys').innerHTML=`Firmware ${esc(s.fw)} &middot; IP ${esc(s.ip)} &middot; WiFi ${esc(s.ssid)} (${s.rssi} dBm) &middot; Free memory ${Math.floor(s.heap/1024)} KB (largest block ${Math.floor(s.maxBlock/1024)} KB) &middot; Up ${Math.floor(s.up/3600)}h ${Math.floor(s.up%3600/60)}m<br>Weather: ${esc(s.wx)}<br>Last restart: ${esc(s.restart)} &middot; <a href="/api/restarts" target="_blank" style="color:var(--acc)">Restart log</a>`}catch(e){$('st').textContent='Clock not reachable'}}
 async function save(){gather();for(const e of C.events){if(!e.target)return toast('Set a date and time for "'+e.name+'"',1)}
   try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(C)});if(!r.ok)return toast(await r.text(),1);toast('Saved');
     C=await(await fetch('/api/config')).json();C.events=C.events||[];renderEvs()}catch(e){toast('Clock not reachable',1)}}

@@ -8,7 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-#define FW_VERSION "1.3.0"
+#define FW_VERSION "1.4.2"
 #define FW_NAME "Countdown Clock"
 #define FW_AUTHOR "jhollin1138"
 #define MAX_EVENTS 6
@@ -69,7 +69,9 @@ struct Config {
   String soundMile = "builtin:chime";
   String soundArr = "builtin:fanfare";
   bool led = true;
-  String homeName;           // home location for the home clock's weather
+  bool deskOn = false;        // desk clock mode was left on (restored after a restart)
+  bool deskWhenEmpty = true;  // show the desk clock when there are no upcoming events
+  String homeName;           // home location for the desk clock's weather
   float homeLat = NAN, homeLon = NAN;
   // Touch calibration: raw reading at screen edge 0 and at 320 (x) / 240 (y)
   bool calSet = false, calSwap = false;
@@ -145,6 +147,8 @@ void applyDisplaySettings();
 void displayMessage(const String& title, const String& l1, const String& l2 = "", const String& l3 = "");
 void displayHold(uint32_t ms);
 void displayProgress(const String& title, int pct);
+void displayReadRect(int x, int y, int w, int h, uint16_t* buf);  // RGB565, high byte first
+int nextEventIdx();  // soonest visible event, or -1
 void displayLoop();
 void celebrate(int which, bool test);
 String activeName();
@@ -155,6 +159,7 @@ void showTrip(int idx);
 enum UiScreen { UI_NONE, UI_MENU, UI_WX, UI_HOME, UI_SETTINGS, UI_WIFI, UI_TRIPS, UI_TRIP,
                 UI_DATE, UI_GEO, UI_KB, UI_INFO };
 void uiOpen(UiScreen s);
+void uiOpenDeskAuto();  // desk clock shown because there are no upcoming events
 void uiClose();
 bool uiActive();
 UiScreen uiScreen();
@@ -166,6 +171,13 @@ struct GeoHit { String label, shortName; float lat, lon; };
 void weatherBegin();
 const char* wxText(int code);
 bool geocode(const String& q, std::vector<GeoHit>& out, String& err);
+String weatherStatus();  // "OK at 8:15 PM via HTTP" or the last error
+
+// diag.cpp
+void diagBegin();
+void diagLoop();
+String diagLastRestart();
+String diagLog();
 
 // web.cpp
 void webBegin();
