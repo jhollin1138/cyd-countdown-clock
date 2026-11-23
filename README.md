@@ -30,7 +30,7 @@ Created by **jhollin1138**.
 
 | Add an event | WiFi setup | Touch calibration | Calibration test |
 |:---:|:---:|:---:|:---:|
-| ![Add an event](docs/images/Event_Add_Screen.png) | ![WiFi setup](docs/images/WiFI_Screen.png) | ![Touch calibration](docs/images/Calibriation_Screen.png) | ![Calibration test](docs/images/Calibration_Test.png) |
+| ![Add an event](docs/images/Event_Add_Screen.png) | ![WiFi setup](docs/images/WiFI_Screen.png) | ![Touch calibration](docs/images/Calibration_Screen.png) | ![Calibration test](docs/images/Calibriation_Test.png) |
 
 ## Hardware
 
